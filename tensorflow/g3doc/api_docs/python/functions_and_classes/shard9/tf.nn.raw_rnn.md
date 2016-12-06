@@ -29,8 +29,8 @@ while not all(finished):
       time=time + 1, cell_output=output, cell_state=cell_state,
       loop_state=loop_state)
   # Emit zeros and copy forward state for minibatch entries that are finished.
-  state = tf.select(finished, state, next_state)
-  emit = tf.select(finished, tf.zeros_like(emit), emit)
+  state = tf.where(finished, state, next_state)
+  emit = tf.where(finished, tf.zeros_like(emit), emit)
   emit_ta = emit_ta.write(time, emit)
   # If any new minibatch entries are marked as finished, mark these.
   finished = tf.logical_or(finished, next_finished)
@@ -136,7 +136,7 @@ outputs = outputs_ta.pack()
     but needed for back prop from GPU to CPU.  This allows training RNNs
     which would typically not fit on a single GPU, with very minimal (or no)
     performance penalty.
-*  <b>`scope`</b>: VariableScope for the created subgraph; defaults to "RNN".
+*  <b>`scope`</b>: VariableScope for the created subgraph; defaults to "rnn".
 
 ##### Returns:
 

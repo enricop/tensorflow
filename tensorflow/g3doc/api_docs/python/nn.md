@@ -218,6 +218,10 @@ Specifically, `y = 1 / (1 + exp(-x))`.
   A Tensor with the same type as `x` if `x.dtype != qint32`
     otherwise the return type is `quint8`.
 
+@compatibility(numpy)
+Equivalent to np.scipy.special.expit
+@end_compatibility
+
 
 - - -
 
@@ -309,7 +313,7 @@ concatenated.
 
 - - -
 
-### `tf.nn.convolution(input, filter, padding, strides=None, dilation_rate=None, name=None)` {#convolution}
+### `tf.nn.convolution(input, filter, padding, strides=None, dilation_rate=None, name=None, data_format=None)` {#convolution}
 
 Computes sums of N-D convolutions (actually cross-correlation).
 
@@ -319,7 +323,8 @@ convolution, based on the French word "trous" meaning holes in English) via
 the optional `dilation_rate` parameter.  Currently, however, output striding
 is not supported for atrous convolutions.
 
-Specifically, given rank (N+2) `input` Tensor of shape
+Specifically, in the case that `data_format` does not start with "NC", given
+a rank (N+2) `input` Tensor of shape
 
   [num_batches,
    input_spatial_shape[0],
@@ -344,17 +349,25 @@ position (x[0], ..., x[N-1]):
 
       sum_{z[0], ..., z[N-1], q}
 
-          filters[z[0], ..., z[N-1], q, k] *
+          filter[z[0], ..., z[N-1], q, k] *
           padded_input[b,
                        x[0]*strides[0] + dilation_rate[0]*z[0],
                        ...,
                        x[N-1]*strides[N-1] + dilation_rate[N-1]*z[N-1],
-                       q],
+                       q]
 
 where `padded_input` is obtained by zero padding the input using an effective
 spatial filter shape of `(spatial_filter_shape-1) * dilation_rate + 1` and
 output striding `strides` as described in the
 [comment here](https://www.tensorflow.org/api_docs/python/nn.html#convolution).
+
+In the case that `data_format` does start with `"NC"`, the `input` and output
+(but not the `filter`) are simply transposed as follows:
+
+  convolution(input, data_format, **kwargs) =
+    tf.transpose(convolution(tf.transpose(input, [0] + range(2,N+2) + [1]),
+                             **kwargs),
+                 [0, N+1] + range(1, N+1))
 
 It is required that 1 <= N <= 3.
 
@@ -362,7 +375,10 @@ It is required that 1 <= N <= 3.
 
 
 *  <b>`input`</b>: An N-D `Tensor` of type `T`, of shape
-    `[batch_size] + input_spatial_shape + [in_channels]`.
+    `[batch_size] + input_spatial_shape + [in_channels]` if data_format does
+    not start with "NC" (default), or
+    `[batch_size, in_channels] + input_spatial_shape` if data_format starts
+    with "NC".
 *  <b>`filter`</b>: An N-D `Tensor` with the same type as `input` and shape
     `spatial_filter_shape + [in_channels, out_channels]`.
 *  <b>`padding`</b>: A string, either `"VALID"` or `"SAME"`. The padding algorithm.
@@ -378,13 +394,24 @@ It is required that 1 <= N <= 3.
     filter in each spatial dimension i.  If any value of dilation_rate is > 1,
     then all values of strides must be 1.
 *  <b>`name`</b>: Optional name for the returned tensor.
+*  <b>`data_format`</b>: A string or None.  Specifies whether the channel dimension of
+    the `input` and output is the last dimension (default, or if `data_format`
+    does not start with "NC"), or the second dimension (if `data_format`
+    starts with "NC").  For N=1, the valid values are "NWC" (default) and
+    "NCW".  For N=2, the valid values are "NHWC" (default) and "NCHW".  For
+    N=3, the valid value is "NDHWC".
 
 ##### Returns:
 
-  A `Tensor` with the same type as `value` of shape
+  A `Tensor` with the same type as `input` of shape
 
-      `[batch_size] + output_spatial_shape + [out_channels]`,
+      `[batch_size] + output_spatial_shape + [out_channels]`
 
+  if data_format is None or does not start with "NC", or
+
+      `[batch_size, out_channels] + output_spatial_shape`
+
+  if data_format starts with "NC",
   where `output_spatial_shape` depends on the value of `padding`.
 
   If padding == "SAME":
@@ -399,8 +426,8 @@ It is required that 1 <= N <= 3.
 ##### Raises:
 
 
-*  <b>`ValueError`</b>: If input/output depth does not match `filter` shape, or if
-    padding is other than `"VALID"` or `"SAME"`.
+*  <b>`ValueError`</b>: If input/output depth does not match `filter` shape, if padding
+    is other than `"VALID"` or `"SAME"`, or if data_format is invalid.
 
 
 - - -
@@ -499,6 +526,46 @@ same horizontal and vertical strides, `strides = [1, stride, stride, 1]`.
 
 - - -
 
+### `tf.nn.depthwise_conv2d_native(input, filter, strides, padding, name=None)` {#depthwise_conv2d_native}
+
+Computes a 2-D depthwise convolution given 4-D `input` and `filter` tensors.
+
+Given an input tensor of shape `[batch, in_height, in_width, in_channels]`
+and a filter / kernel tensor of shape
+`[filter_height, filter_width, in_channels, channel_multiplier]`, containing
+`in_channels` convolutional filters of depth 1, `depthwise_conv2d` applies
+a different filter to each input channel (expanding from 1 channel to
+`channel_multiplier` channels for each), then concatenates the results
+together. Thus, the output has `in_channels * channel_multiplier` channels.
+
+for k in 0..in_channels-1
+  for q in 0..channel_multiplier-1
+    output[b, i, j, k * channel_multiplier + q] =
+      sum_{di, dj} input[b, strides[1] * i + di, strides[2] * j + dj, k] *
+                        filter[di, dj, k, q]
+
+Must have `strides[0] = strides[3] = 1`.  For the most common case of the same
+horizontal and vertices strides, `strides = [1, stride, stride, 1]`.
+
+##### Args:
+
+
+*  <b>`input`</b>: A `Tensor`. Must be one of the following types: `float32`, `float64`.
+*  <b>`filter`</b>: A `Tensor`. Must have the same type as `input`.
+*  <b>`strides`</b>: A list of `ints`.
+    1-D of length 4.  The stride of the sliding window for each dimension
+    of `input`.
+*  <b>`padding`</b>: A `string` from: `"SAME", "VALID"`.
+    The type of padding algorithm to use.
+*  <b>`name`</b>: A name for the operation (optional).
+
+##### Returns:
+
+  A `Tensor`. Has the same type as `input`.
+
+
+- - -
+
 ### `tf.nn.separable_conv2d(input, depthwise_filter, pointwise_filter, strides, padding, name=None)` {#separable_conv2d}
 
 2-D convolution with separable filters.
@@ -586,9 +653,9 @@ by Dilated Convolutions](http://arxiv.org/abs/1511.07122). Previous works
 that effectively use atrous convolution in different ways are, among others,
 [OverFeat: Integrated Recognition, Localization and Detection using
 Convolutional Networks](http://arxiv.org/abs/1312.6229) and [Fast Image
-Scanning with Deep Max-Pooling Convolutional Neural Networks]
-(http://arxiv.org/abs/1302.1700). Atrous convolution is also closely related
-to the so-called noble identities in multi-rate signal processing.
+Scanning with Deep Max-Pooling Convolutional Neural Networks](http://arxiv.org/abs/1302.1700).
+Atrous convolution is also closely related to the so-called noble identities
+in multi-rate signal processing.
 
 There are many different ways to implement atrous convolution (see the refs
 above). The implementation here reduces
@@ -668,7 +735,7 @@ inputs are identical.
 
 - - -
 
-### `tf.nn.conv2d_transpose(value, filter, output_shape, strides, padding='SAME', name=None)` {#conv2d_transpose}
+### `tf.nn.conv2d_transpose(value, filter, output_shape, strides, padding='SAME', data_format='NHWC', name=None)` {#conv2d_transpose}
 
 The transpose of `conv2d`.
 
@@ -681,7 +748,8 @@ deconvolution.
 
 
 *  <b>`value`</b>: A 4-D `Tensor` of type `float` and shape
-    `[batch, height, width, in_channels]`.
+    `[batch, height, width, in_channels]` for `NHWC` data format or
+    `[batch, in_channels, height, width]` for `NCHW` data format.
 *  <b>`filter`</b>: A 4-D `Tensor` with the same type as `value` and shape
     `[height, width, output_channels, in_channels]`.  `filter`'s
     `in_channels` dimension must match that of `value`.
@@ -691,6 +759,7 @@ deconvolution.
     dimension of the input tensor.
 *  <b>`padding`</b>: A string, either `'VALID'` or `'SAME'`. The padding algorithm.
     See the [comment here](https://www.tensorflow.org/api_docs/python/nn.html#convolution)
+*  <b>`data_format`</b>: A string. 'NHWC' and 'NCHW' are supported.
 *  <b>`name`</b>: Optional name for the returned tensor.
 
 ##### Returns:
@@ -710,19 +779,27 @@ deconvolution.
 
 Computes a 1-D convolution given 3-D input and filter tensors.
 
-Given an input tensor of shape [batch, in_width, in_channels]
+Given an input tensor of shape
+  [batch, in_width, in_channels]
+if data_format is "NHWC", or
+  [batch, in_channels, in_width]
+if data_format is "NCHW",
 and a filter / kernel tensor of shape
 [filter_width, in_channels, out_channels], this op reshapes
 the arguments to pass them to conv2d to perform the equivalent
 convolution operation.
 
-Internally, this op reshapes the input tensors and invokes
-`tf.nn.conv2d`.  A tensor of shape [batch, in_width, in_channels]
-is reshaped to [batch, 1, in_width, in_channels], and the filter
-is reshaped to [1, filter_width, in_channels, out_channels].
-The result is then reshaped back to [batch, out_width, out_channels]
-(where out_width is a function of the stride and padding as in
-conv2d) and returned to the caller.
+Internally, this op reshapes the input tensors and invokes `tf.nn.conv2d`.
+For example, if `data_format` does not start with "NC", a tensor of shape
+  [batch, in_width, in_channels]
+is reshaped to
+  [batch, 1, in_width, in_channels],
+and the filter is reshaped to
+  [1, filter_width, in_channels, out_channels].
+The result is then reshaped back to
+  [batch, out_width, out_channels]
+(where out_width is a function of the stride and padding as in conv2d) and
+returned to the caller.
 
 ##### Args:
 
@@ -742,6 +819,11 @@ conv2d) and returned to the caller.
 ##### Returns:
 
   A `Tensor`.  Has the same type as input.
+
+##### Raises:
+
+
+*  <b>`ValueError`</b>: if `data_format` is invalid.
 
 
 - - -
@@ -812,6 +894,181 @@ deconvolution.
 
 *  <b>`ValueError`</b>: If input/output depth does not match `filter`'s shape, or if
     padding is other than `'VALID'` or `'SAME'`.
+
+
+- - -
+
+### `tf.nn.conv2d_backprop_filter(input, filter_sizes, out_backprop, strides, padding, use_cudnn_on_gpu=None, data_format=None, name=None)` {#conv2d_backprop_filter}
+
+Computes the gradients of convolution with respect to the filter.
+
+##### Args:
+
+
+*  <b>`input`</b>: A `Tensor`. Must be one of the following types: `half`, `float32`, `float64`.
+    4-D with shape `[batch, in_height, in_width, in_channels]`.
+*  <b>`filter_sizes`</b>: A `Tensor` of type `int32`.
+    An integer vector representing the tensor shape of `filter`,
+    where `filter` is a 4-D
+    `[filter_height, filter_width, in_channels, out_channels]` tensor.
+*  <b>`out_backprop`</b>: A `Tensor`. Must have the same type as `input`.
+    4-D with shape `[batch, out_height, out_width, out_channels]`.
+    Gradients w.r.t. the output of the convolution.
+*  <b>`strides`</b>: A list of `ints`.
+    The stride of the sliding window for each dimension of the input
+    of the convolution. Must be in the same order as the dimension specified with
+    format.
+*  <b>`padding`</b>: A `string` from: `"SAME", "VALID"`.
+    The type of padding algorithm to use.
+*  <b>`use_cudnn_on_gpu`</b>: An optional `bool`. Defaults to `True`.
+*  <b>`data_format`</b>: An optional `string` from: `"NHWC", "NCHW"`. Defaults to `"NHWC"`.
+    Specify the data format of the input and output data. With the
+    default format "NHWC", the data is stored in the order of:
+        [batch, in_height, in_width, in_channels].
+    Alternatively, the format could be "NCHW", the data storage order of:
+        [batch, in_channels, in_height, in_width].
+*  <b>`name`</b>: A name for the operation (optional).
+
+##### Returns:
+
+  A `Tensor`. Has the same type as `input`. 4-D with shape
+  `[filter_height, filter_width, in_channels, out_channels]`.  Gradient w.r.t.
+  the `filter` input of the convolution.
+
+
+- - -
+
+### `tf.nn.conv2d_backprop_input(input_sizes, filter, out_backprop, strides, padding, use_cudnn_on_gpu=None, data_format=None, name=None)` {#conv2d_backprop_input}
+
+Computes the gradients of convolution with respect to the input.
+
+##### Args:
+
+
+*  <b>`input_sizes`</b>: A `Tensor` of type `int32`.
+    An integer vector representing the shape of `input`,
+    where `input` is a 4-D `[batch, height, width, channels]` tensor.
+*  <b>`filter`</b>: A `Tensor`. Must be one of the following types: `half`, `float32`, `float64`.
+    4-D with shape
+    `[filter_height, filter_width, in_channels, out_channels]`.
+*  <b>`out_backprop`</b>: A `Tensor`. Must have the same type as `filter`.
+    4-D with shape `[batch, out_height, out_width, out_channels]`.
+    Gradients w.r.t. the output of the convolution.
+*  <b>`strides`</b>: A list of `ints`.
+    The stride of the sliding window for each dimension of the input
+    of the convolution. Must be in the same order as the dimension specified with
+    format.
+*  <b>`padding`</b>: A `string` from: `"SAME", "VALID"`.
+    The type of padding algorithm to use.
+*  <b>`use_cudnn_on_gpu`</b>: An optional `bool`. Defaults to `True`.
+*  <b>`data_format`</b>: An optional `string` from: `"NHWC", "NCHW"`. Defaults to `"NHWC"`.
+    Specify the data format of the input and output data. With the
+    default format "NHWC", the data is stored in the order of:
+        [batch, in_height, in_width, in_channels].
+    Alternatively, the format could be "NCHW", the data storage order of:
+        [batch, in_channels, in_height, in_width].
+*  <b>`name`</b>: A name for the operation (optional).
+
+##### Returns:
+
+  A `Tensor`. Has the same type as `filter`.
+  4-D with shape `[batch, in_height, in_width, in_channels]`.  Gradient
+  w.r.t. the input of the convolution.
+
+
+- - -
+
+### `tf.nn.conv3d_backprop_filter_v2(input, filter_sizes, out_backprop, strides, padding, name=None)` {#conv3d_backprop_filter_v2}
+
+Computes the gradients of 3-D convolution with respect to the filter.
+
+##### Args:
+
+
+*  <b>`input`</b>: A `Tensor`. Must be one of the following types: `float32`, `float64`, `int64`, `int32`, `uint8`, `uint16`, `int16`, `int8`, `complex64`, `complex128`, `qint8`, `quint8`, `qint32`, `half`.
+    Shape `[batch, depth, rows, cols, in_channels]`.
+*  <b>`filter_sizes`</b>: A `Tensor` of type `int32`.
+    An integer vector representing the tensor shape of `filter`,
+    where `filter` is a 5-D
+    `[filter_depth, filter_height, filter_width, in_channels, out_channels]`
+    tensor.
+*  <b>`out_backprop`</b>: A `Tensor`. Must have the same type as `input`.
+    Backprop signal of shape `[batch, out_depth, out_rows, out_cols,
+    out_channels]`.
+*  <b>`strides`</b>: A list of `ints` that has length `>= 5`.
+    1-D tensor of length 5. The stride of the sliding window for each
+    dimension of `input`. Must have `strides[0] = strides[4] = 1`.
+*  <b>`padding`</b>: A `string` from: `"SAME", "VALID"`.
+    The type of padding algorithm to use.
+*  <b>`name`</b>: A name for the operation (optional).
+
+##### Returns:
+
+  A `Tensor`. Has the same type as `input`.
+
+
+- - -
+
+### `tf.nn.depthwise_conv2d_native_backprop_filter(input, filter_sizes, out_backprop, strides, padding, name=None)` {#depthwise_conv2d_native_backprop_filter}
+
+Computes the gradients of depthwise convolution with respect to the filter.
+
+##### Args:
+
+
+*  <b>`input`</b>: A `Tensor`. Must be one of the following types: `float32`, `float64`.
+    4-D with shape `[batch, in_height, in_width, in_channels]`.
+*  <b>`filter_sizes`</b>: A `Tensor` of type `int32`.
+    An integer vector representing the tensor shape of `filter`,
+    where `filter` is a 4-D
+    `[filter_height, filter_width, in_channels, depthwise_multiplier]` tensor.
+*  <b>`out_backprop`</b>: A `Tensor`. Must have the same type as `input`.
+    4-D with shape `[batch, out_height, out_width, out_channels]`.
+    Gradients w.r.t. the output of the convolution.
+*  <b>`strides`</b>: A list of `ints`.
+    The stride of the sliding window for each dimension of the input
+    of the convolution.
+*  <b>`padding`</b>: A `string` from: `"SAME", "VALID"`.
+    The type of padding algorithm to use.
+*  <b>`name`</b>: A name for the operation (optional).
+
+##### Returns:
+
+  A `Tensor`. Has the same type as `input`. 4-D with shape
+  `[filter_height, filter_width, in_channels, out_channels]`.  Gradient w.r.t.
+  the `filter` input of the convolution.
+
+
+- - -
+
+### `tf.nn.depthwise_conv2d_native_backprop_input(input_sizes, filter, out_backprop, strides, padding, name=None)` {#depthwise_conv2d_native_backprop_input}
+
+Computes the gradients of depthwise convolution with respect to the input.
+
+##### Args:
+
+
+*  <b>`input_sizes`</b>: A `Tensor` of type `int32`.
+    An integer vector representing the shape of `input`,
+    where `input` is a 4-D `[batch, height, width, channels]` tensor.
+*  <b>`filter`</b>: A `Tensor`. Must be one of the following types: `float32`, `float64`.
+    4-D with shape
+    `[filter_height, filter_width, in_channels, depthwise_multiplier]`.
+*  <b>`out_backprop`</b>: A `Tensor`. Must have the same type as `filter`.
+    4-D with shape `[batch, out_height, out_width, out_channels]`.
+    Gradients w.r.t. the output of the convolution.
+*  <b>`strides`</b>: A list of `ints`.
+    The stride of the sliding window for each dimension of the input
+    of the convolution.
+*  <b>`padding`</b>: A `string` from: `"SAME", "VALID"`.
+    The type of padding algorithm to use.
+*  <b>`name`</b>: A name for the operation (optional).
+
+##### Returns:
+
+  A `Tensor`. Has the same type as `filter`.
+  4-D with shape `[batch, in_height, in_width, in_channels]`.  Gradient
+  w.r.t. the input of the convolution.
 
 
 
@@ -996,7 +1253,7 @@ pooling region.
 *  <b>`pseudo_random`</b>: An optional `bool`. Defaults to `False`.
     When set to True, generates the pooling sequence in a
     pseudorandom fashion, otherwise, in a random fashion. Check paper [Benjamin
-    Graham, Fractional Max-Pooling] (http://arxiv.org/abs/1412.6071) for
+    Graham, Fractional Max-Pooling](http://arxiv.org/abs/1412.6071) for
     difference between pseudorandom and random.
 *  <b>`overlapping`</b>: An optional `bool`. Defaults to `False`.
     When set to True, it means when pooling, the values at the boundary
@@ -1080,7 +1337,7 @@ For more details on fractional max pooling, see this paper:
 *  <b>`pseudo_random`</b>: An optional `bool`. Defaults to `False`.
     When set to True, generates the pooling sequence in a
     pseudorandom fashion, otherwise, in a random fashion. Check paper [Benjamin
-    Graham, Fractional Max-Pooling] (http://arxiv.org/abs/1412.6071) for
+    Graham, Fractional Max-Pooling](http://arxiv.org/abs/1412.6071) for
     difference between pseudorandom and random.
 *  <b>`overlapping`</b>: An optional `bool`. Defaults to `False`.
     When set to True, it means when pooling, the values at the boundary
@@ -1116,11 +1373,11 @@ For more details on fractional max pooling, see this paper:
 
 - - -
 
-### `tf.nn.pool(input, window_shape, pooling_type, padding, dilation_rate=None, strides=None, name=None)` {#pool}
+### `tf.nn.pool(input, window_shape, pooling_type, padding, dilation_rate=None, strides=None, name=None, data_format=None)` {#pool}
 
 Performs an N-D pooling operation.
 
-Computes for
+In the case that `data_format` does not start with "NC", computes for
     0 <= b < batch_size,
     0 <= x[i] < output_spatial_shape[i],
     0 <= c < num_channels:
@@ -1138,12 +1395,22 @@ and pad_before is defined based on the value of `padding` as described in the
 [comment here](https://www.tensorflow.org/api_docs/python/nn.html#convolution).
 The reduction never includes out-of-bounds positions.
 
+In the case that `data_format` starts with `"NC"`, the `input` and output are
+simply transposed as follows:
+
+  pool(input, data_format, **kwargs) =
+    tf.transpose(pool(tf.transpose(input, [0] + range(2,N+2) + [1]),
+                      **kwargs),
+                 [0, N+1] + range(1, N+1))
+
 ##### Args:
 
 
 *  <b>`input`</b>: Tensor of rank N+2, of shape
-    [batch_size] + input_spatial_shape + [num_channels].
-    Pooling happens over the spatial dimensions only.
+    `[batch_size] + input_spatial_shape + [num_channels]` if data_format does
+    not start with "NC" (default), or
+    `[batch_size, num_channels] + input_spatial_shape` if data_format starts
+    with "NC".  Pooling happens over the spatial dimensions only.
 *  <b>`window_shape`</b>: Sequence of N ints >= 1.
 *  <b>`pooling_type`</b>: Specifies pooling operation, must be "AVG" or "MAX".
 *  <b>`padding`</b>: The padding algorithm, must be "SAME" or "VALID".
@@ -1155,11 +1422,23 @@ The reduction never includes out-of-bounds positions.
     If any value of strides is > 1, then all values of dilation_rate must be
     1.
 *  <b>`name`</b>: Optional. Name of the op.
+*  <b>`data_format`</b>: A string or None.  Specifies whether the channel dimension of
+    the `input` and output is the last dimension (default, or if `data_format`
+    does not start with "NC"), or the second dimension (if `data_format`
+    starts with "NC").  For N=1, the valid values are "NWC" (default) and
+    "NCW".  For N=2, the valid values are "NHWC" (default) and "NCHW".  For
+    N=3, the valid value is "NDHWC".
 
 ##### Returns:
 
   Tensor of rank N+2, of shape
-    [batch_size] + output_spatial_shape + [num_channels],
+    [batch_size] + output_spatial_shape + [num_channels]
+
+  if data_format is None or does not start with "NC", or
+
+    [batch_size, num_channels] + output_spatial_shape
+
+  if data_format starts with "NC",
   where `output_spatial_shape` depends on the value of padding:
 
   If padding = "SAME":
@@ -1180,7 +1459,8 @@ The reduction never includes out-of-bounds positions.
 
 Morphological operators are non-linear filters used in image processing.
 
-[Greyscale morphological dilation](https://en.wikipedia.org/wiki/Dilation_(morphology))
+[Greyscale morphological dilation
+](https://en.wikipedia.org/wiki/Dilation_(morphology))
 is the max-sum counterpart of standard sum-product convolution:
 
     output[b, y, x, c] =
@@ -1194,7 +1474,8 @@ The `filter` is usually called structuring function. Max-pooling is a special
 case of greyscale morphological dilation when the filter assumes all-zero
 values (a.k.a. flat structuring function).
 
-[Greyscale morphological erosion](https://en.wikipedia.org/wiki/Erosion_(morphology))
+[Greyscale morphological erosion
+](https://en.wikipedia.org/wiki/Erosion_(morphology))
 is the min-sum counterpart of standard sum-product convolution:
 
     output[b, y, x, c] =
@@ -1317,6 +1598,142 @@ the dilation of `-value` by the reflected `kernel`.
 
 *  <b>`ValueError`</b>: If the `value` depth does not match `kernel`' shape, or if
     padding is other than `'VALID'` or `'SAME'`.
+
+
+- - -
+
+### `tf.nn.with_space_to_batch(input, dilation_rate, padding, op, filter_shape=None, spatial_dims=None)` {#with_space_to_batch}
+
+Performs `op` on the space-to-batch representation of `input`.
+
+This has the effect of transforming sliding window operations into the
+corresponding "atrous" operation in which the input is sampled at the
+specified `dilation_rate`.
+
+In the special case that `dilation_rate` is uniformly 1, this simply returns:
+
+  op(input, num_spatial_dims, padding)
+
+Otherwise, it returns:
+
+  batch_to_space_nd(
+    op(space_to_batch_nd(input, adjusted_dilation_rate, adjusted_paddings),
+       num_spatial_dims,
+       "VALID")
+    adjusted_dilation_rate,
+    adjusted_crops),
+
+where:
+
+  adjusted_dilation_rate is an int64 tensor of shape [max(spatial_dims)],
+  adjusted_{paddings,crops} are int64 tensors of shape [max(spatial_dims), 2]
+
+defined as follows:
+
+We first define two int64 tensors `paddings` and `crops` of shape
+`[num_spatial_dims, 2]` based on the value of `padding` and the spatial
+dimensions of the `input`:
+
+If `padding = "VALID"`, then:
+
+  paddings, crops = required_space_to_batch_paddings(
+    input_shape[spatial_dims],
+    dilation_rate)
+
+If `padding = "SAME"`, then:
+
+  dilated_filter_shape =
+    filter_shape + (filter_shape - 1) * (dilation_rate - 1)
+
+  paddings, crops = required_space_to_batch_paddings(
+    input_shape[spatial_dims],
+    dilation_rate,
+    [(dilated_filter_shape - 1) // 2,
+     dilated_filter_shape - 1 - (dilated_filter_shape - 1) // 2])
+
+Because `space_to_batch_nd` and `batch_to_space_nd` assume that the spatial
+dimensions are contiguous starting at the second dimension, but the specified
+`spatial_dims` may not be, we must adjust `dilation_rate`, `paddings` and
+`crops` in order to be usable with these operations.  For a given dimension,
+if the block size is 1, and both the starting and ending padding and crop
+amounts are 0, then space_to_batch_nd effectively leaves that dimension alone,
+which is what is needed for dimensions not part of `spatial_dims`.
+Furthermore, `space_to_batch_nd` and `batch_to_space_nd` handle this case
+efficiently for any number of leading and trailing dimensions.
+
+For 0 <= i < len(spatial_dims), we assign:
+
+  adjusted_dilation_rate[spatial_dims[i] - 1] = dilation_rate[i]
+  adjusted_paddings[spatial_dims[i] - 1, :] = paddings[i, :]
+  adjusted_crops[spatial_dims[i] - 1, :] = crops[i, :]
+
+All unassigned values of `adjusted_dilation_rate` default to 1, while all
+unassigned values of `adjusted_paddings` and `adjusted_crops` default to 0.
+
+Note in the case that `dilation_rate` is not uniformly 1, specifying "VALID"
+padding is equivalent to specifying `padding = "SAME"` with a filter_shape of
+`[1]*N`.
+
+Advanced usage. Note the following optimization: A sequence of
+`with_space_to_batch` operations with identical (not uniformly 1)
+`dilation_rate` parameters and "VALID" padding
+
+  net = with_space_to_batch(net, dilation_rate, "VALID", op_1)
+  ...
+  net = with_space_to_batch(net, dilation_rate, "VALID", op_k)
+
+can be combined into a single `with_space_to_batch` operation as follows:
+
+  def combined_op(converted_input, num_spatial_dims, _):
+    result = op_1(converted_input, num_spatial_dims, "VALID")
+    ...
+    result = op_k(result, num_spatial_dims, "VALID")
+
+  net = with_space_to_batch(net, dilation_rate, "VALID", combined_op)
+
+This eliminates the overhead of `k-1` calls to `space_to_batch_nd` and
+`batch_to_space_nd`.
+
+Similarly, a sequence of `with_space_to_batch` operations with identical (not
+uniformly 1) `dilation_rate` parameters, "SAME" padding, and odd filter
+dimensions
+
+  net = with_space_to_batch(net, dilation_rate, "SAME", op_1, filter_shape_1)
+  ...
+  net = with_space_to_batch(net, dilation_rate, "SAME", op_k, filter_shape_k)
+
+can be combined into a single `with_space_to_batch` operation as follows:
+
+  def combined_op(converted_input, num_spatial_dims, _):
+    result = op_1(converted_input, num_spatial_dims, "SAME")
+    ...
+    result = op_k(result, num_spatial_dims, "SAME")
+
+  net = with_space_to_batch(net, dilation_rate, "VALID", combined_op)
+
+##### Args:
+
+
+*  <b>`input`</b>: Tensor of rank > max(spatial_dims).
+*  <b>`dilation_rate`</b>: int32 Tensor of *known* shape [num_spatial_dims].
+*  <b>`padding`</b>: str constant equal to "VALID" or "SAME"
+*  <b>`op`</b>: Function that maps (input, num_spatial_dims, padding) -> output
+*  <b>`filter_shape`</b>: If padding = "SAME", specifies the shape of the convolution
+    kernel/pooling window as an integer Tensor of shape [>=num_spatial_dims].
+    If padding = "VALID", filter_shape is ignored and need not be specified.
+*  <b>`spatial_dims`</b>: Monotonically increasing sequence of `num_spatial_dims`
+    integers (which are >= 1) specifying the spatial dimensions of `input`
+    and output.  Defaults to: `range(1, num_spatial_dims+1)`.
+
+##### Returns:
+
+  The output Tensor as described above.
+
+##### Raises:
+
+
+*  <b>`ValueError`</b>: if `padding` is invalid or the arguments are incompatible.
+*  <b>`ValueError`</b>: if `spatial_dims` are invalid.
 
 
 
@@ -1500,6 +1917,125 @@ Returns the frequency-weighted mean and variance of `x`.
   Two tensors: `weighted_mean` and `weighted_variance`.
 
 
+- - -
+
+### `tf.nn.fused_batch_norm(x, scale, offset, mean=None, variance=None, epsilon=0.001, data_format='NHWC', is_training=True, name=None)` {#fused_batch_norm}
+
+Batch normalization.
+
+As described in http://arxiv.org/abs/1502.03167.
+
+##### Args:
+
+
+*  <b>`x`</b>: Input `Tensor` of 4 dimensions.
+*  <b>`scale`</b>: A `Tensor` of 1 dimension for scaling.
+*  <b>`offset`</b>: A `Tensor` of 1 dimension for bias.
+*  <b>`mean`</b>: A `Tensor` of 1 dimension for population mean used for inference.
+*  <b>`variance`</b>: A `Tensor` of 1 dimension for population variance
+            used for inference.
+*  <b>`epsilon`</b>: A small float number added to the variance of x.
+*  <b>`data_format`</b>: The data format for x. Either "NHWC" (default) or "NCHW".
+*  <b>`is_training`</b>: A bool value to specify if the operation is used for
+               training or inference.
+*  <b>`name`</b>: A name for this operation (optional).
+
+##### Returns:
+
+
+*  <b>`y`</b>: A 4D Tensor for the normalized, scaled, offsetted x.
+*  <b>`batch_mean`</b>: A 1D Tensor for the mean of x.
+*  <b>`batch_var`</b>: A 1D Tensor for the variance of x.
+
+##### Raises:
+
+
+*  <b>`ValueError`</b>: If mean or variance is not None when is_training is True.
+
+
+- - -
+
+### `tf.nn.batch_normalization(x, mean, variance, offset, scale, variance_epsilon, name=None)` {#batch_normalization}
+
+Batch normalization.
+
+As described in http://arxiv.org/abs/1502.03167.
+Normalizes a tensor by `mean` and `variance`, and applies (optionally) a
+`scale` \\(\gamma\\) to it, as well as an `offset` \\(\beta\\):
+
+\\(\frac{\gamma(x-\mu)}{\sigma}+\beta\\)
+
+`mean`, `variance`, `offset` and `scale` are all expected to be of one of two
+shapes:
+
+  * In all generality, they can have the same number of dimensions as the
+    input `x`, with identical sizes as `x` for the dimensions that are not
+    normalized over (the 'depth' dimension(s)), and dimension 1 for the
+    others which are being normalized over.
+    `mean` and `variance` in this case would typically be the outputs of
+    `tf.nn.moments(..., keep_dims=True)` during training, or running averages
+    thereof during inference.
+  * In the common case where the 'depth' dimension is the last dimension in
+    the input tensor `x`, they may be one dimensional tensors of the same
+    size as the 'depth' dimension.
+    This is the case for example for the common `[batch, depth]` layout of
+    fully-connected layers, and `[batch, height, width, depth]` for
+    convolutions.
+    `mean` and `variance` in this case would typically be the outputs of
+    `tf.nn.moments(..., keep_dims=False)` during training, or running averages
+    thereof during inference.
+
+##### Args:
+
+
+*  <b>`x`</b>: Input `Tensor` of arbitrary dimensionality.
+*  <b>`mean`</b>: A mean `Tensor`.
+*  <b>`variance`</b>: A variance `Tensor`.
+*  <b>`offset`</b>: An offset `Tensor`, often denoted \\(\beta\\) in equations, or
+    None. If present, will be added to the normalized tensor.
+*  <b>`scale`</b>: A scale `Tensor`, often denoted \\(\gamma\\) in equations, or
+    `None`. If present, the scale is applied to the normalized tensor.
+*  <b>`variance_epsilon`</b>: A small float number to avoid dividing by 0.
+*  <b>`name`</b>: A name for this operation (optional).
+
+##### Returns:
+
+  the normalized, scaled, offset tensor.
+
+
+- - -
+
+### `tf.nn.batch_norm_with_global_normalization(t, m, v, beta, gamma, variance_epsilon, scale_after_normalization, name=None)` {#batch_norm_with_global_normalization}
+
+Batch normalization.
+
+This op is deprecated. See `tf.nn.batch_normalization`.
+
+##### Args:
+
+
+*  <b>`t`</b>: A 4D input Tensor.
+*  <b>`m`</b>: A 1D mean Tensor with size matching the last dimension of t.
+    This is the first output from tf.nn.moments,
+    or a saved moving average thereof.
+*  <b>`v`</b>: A 1D variance Tensor with size matching the last dimension of t.
+    This is the second output from tf.nn.moments,
+    or a saved moving average thereof.
+*  <b>`beta`</b>: A 1D beta Tensor with size matching the last dimension of t.
+    An offset to be added to the normalized tensor.
+*  <b>`gamma`</b>: A 1D gamma Tensor with size matching the last dimension of t.
+    If "scale_after_normalization" is true, this tensor will be multiplied
+    with the normalized tensor.
+*  <b>`variance_epsilon`</b>: A small float number to avoid dividing by 0.
+*  <b>`scale_after_normalization`</b>: A bool indicating whether the resulted tensor
+    needs to be multiplied with gamma.
+*  <b>`name`</b>: A name for this operation (optional).
+
+##### Returns:
+
+   A batch-normalized `t`.
+
+
 
 ## Losses
 
@@ -1636,7 +2172,7 @@ equivalent formulation
 
 ### `tf.nn.softmax(logits, dim=-1, name=None)` {#softmax}
 
-Computes log softmax activations.
+Computes softmax activations.
 
 For each batch `i` and class `j` we have
 
@@ -1670,7 +2206,7 @@ Computes log softmax activations.
 
 For each batch `i` and class `j` we have
 
-    logsoftmax = logits - reduce_sum(exp(logits), dim)
+    logsoftmax = logits - log(reduce_sum(exp(logits), dim))
 
 ##### Args:
 
@@ -1843,7 +2379,7 @@ tensors.
 
 - - -
 
-### `tf.nn.embedding_lookup(params, ids, partition_strategy='mod', name=None, validate_indices=True)` {#embedding_lookup}
+### `tf.nn.embedding_lookup(params, ids, partition_strategy='mod', name=None, validate_indices=True, max_norm=None)` {#embedding_lookup}
 
 Looks up `ids` in a list of embedding tensors.
 
@@ -1886,6 +2422,8 @@ tensor. The returned tensor has shape `shape(ids) + shape(params)[1:]`.
     is `"mod"`.
 *  <b>`name`</b>: A name for the operation (optional).
 *  <b>`validate_indices`</b>: Whether or not to validate gather indices.
+*  <b>`max_norm`</b>: If not None, embedding values are l2-normalized to the value of
+   max_norm.
 
 ##### Returns:
 
@@ -1899,7 +2437,7 @@ tensor. The returned tensor has shape `shape(ids) + shape(params)[1:]`.
 
 - - -
 
-### `tf.nn.embedding_lookup_sparse(params, sp_ids, sp_weights, partition_strategy='mod', name=None, combiner=None)` {#embedding_lookup_sparse}
+### `tf.nn.embedding_lookup_sparse(params, sp_ids, sp_weights, partition_strategy='mod', name=None, combiner=None, max_norm=None)` {#embedding_lookup_sparse}
 
 Computes embeddings for the given ids and weights.
 
@@ -1932,6 +2470,8 @@ is the sum of the size of params along dimension 0.
     "mean" is the weighted sum divided by the total weight.
     "sqrtn" is the weighted sum divided by the square root of the sum of the
     squares of the weights.
+*  <b>`max_norm`</b>: If not None, each embedding is normalized to have l2 norm equal
+    to max_norm before combining.
 
 ##### Returns:
 
@@ -2051,7 +2591,7 @@ for correctness than performance, unlike in rnn().
     transposes at the beginning and end of the RNN calculation.  However,
     most TensorFlow data is batch-major, so by default this function
     accepts input and emits output in batch-major form.
-*  <b>`scope`</b>: VariableScope for the created subgraph; defaults to "RNN".
+*  <b>`scope`</b>: VariableScope for the created subgraph; defaults to "rnn".
 
 ##### Returns:
 
@@ -2135,7 +2675,7 @@ The dynamic calculation performed is, at time `t` for batch row `b`,
     dtype.
 *  <b>`sequence_length`</b>: Specifies the length of each sequence in inputs.
     An int32 or int64 vector (tensor) size `[batch_size]`, values in `[0, T)`.
-*  <b>`scope`</b>: VariableScope for the created subgraph; defaults to "RNN".
+*  <b>`scope`</b>: VariableScope for the created subgraph; defaults to "rnn".
 
 ##### Returns:
 
@@ -2173,7 +2713,7 @@ RNN that accepts a state saver for time-truncated RNN calculation.
     be a single string.
 *  <b>`sequence_length`</b>: (optional) An int32/int64 vector size [batch_size].
     See the documentation for rnn() for more details about sequence_length.
-*  <b>`scope`</b>: VariableScope for the created subgraph; defaults to "RNN".
+*  <b>`scope`</b>: VariableScope for the created subgraph; defaults to "rnn".
 
 ##### Returns:
 
@@ -2243,11 +2783,9 @@ given.
     most TensorFlow data is batch-major, so by default this function
     accepts input and emits output in batch-major form.
 *  <b>`dtype`</b>: (optional) The data type for the initial state.  Required if
-    initial_state is not provided.
-*  <b>`sequence_length`</b>: An int32/int64 vector, size `[batch_size]`,
-    containing the actual lengths for each of the sequences.
     either of the initial states are not provided.
-*  <b>`scope`</b>: VariableScope for the created subgraph; defaults to "BiRNN"
+*  <b>`scope`</b>: VariableScope for the created subgraph; defaults to
+    "bidirectional_rnn"
 
 ##### Returns:
 
@@ -2311,7 +2849,8 @@ length(s) of the sequence(s) or completely unrolled if length(s) is not given.
     either of the initial states are not provided.
 *  <b>`sequence_length`</b>: (optional) An int32/int64 vector, size `[batch_size]`,
     containing the actual lengths for each of the sequences.
-*  <b>`scope`</b>: VariableScope for the created subgraph; defaults to "BiRNN"
+*  <b>`scope`</b>: VariableScope for the created subgraph; defaults to
+    "bidirectional_rnn"
 
 ##### Returns:
 
@@ -2361,8 +2900,8 @@ while not all(finished):
       time=time + 1, cell_output=output, cell_state=cell_state,
       loop_state=loop_state)
   # Emit zeros and copy forward state for minibatch entries that are finished.
-  state = tf.select(finished, state, next_state)
-  emit = tf.select(finished, tf.zeros_like(emit), emit)
+  state = tf.where(finished, state, next_state)
+  emit = tf.where(finished, tf.zeros_like(emit), emit)
   emit_ta = emit_ta.write(time, emit)
   # If any new minibatch entries are marked as finished, mark these.
   finished = tf.logical_or(finished, next_finished)
@@ -2468,7 +3007,7 @@ outputs = outputs_ta.pack()
     but needed for back prop from GPU to CPU.  This allows training RNNs
     which would typically not fit on a single GPU, with very minimal (or no)
     performance penalty.
-*  <b>`scope`</b>: VariableScope for the created subgraph; defaults to "RNN".
+*  <b>`scope`</b>: VariableScope for the created subgraph; defaults to "rnn".
 
 ##### Returns:
 
@@ -2702,7 +3241,7 @@ is `A B B B B`, the return value is:
 ## Evaluation
 
 The evaluation ops are useful for measuring the performance of a network.
-Since they are non-differentiable, they are typically used at evaluation time.
+They are typically used at evaluation time.
 
 - - -
 
@@ -2799,10 +3338,8 @@ TensorFlow provides the following sampled loss functions for faster training.
 Computes and returns the noise-contrastive estimation training loss.
 
 See [Noise-contrastive estimation: A new estimation principle for
-unnormalized statistical models]
-(http://www.jmlr.org/proceedings/papers/v9/gutmann10a/gutmann10a.pdf).
-Also see our [Candidate Sampling Algorithms Reference]
-(../../extras/candidate_sampling.pdf)
+unnormalized statistical models](http://www.jmlr.org/proceedings/papers/v9/gutmann10a/gutmann10a.pdf).
+Also see our [Candidate Sampling Algorithms Reference](../../extras/candidate_sampling.pdf)
 
 Note: By default this uses a log-uniform (Zipfian) distribution for sampling,
 so your labels must be sorted in order of decreasing frequency to achieve
@@ -3208,94 +3745,142 @@ target classes as noise classes for the same example.
 
 
 
-## Other Functions and Classes
+### Quantization ops
+
 - - -
 
-### `tf.nn.batch_normalization(x, mean, variance, offset, scale, variance_epsilon, name=None)` {#batch_normalization}
+### `tf.nn.quantized_conv2d(input, filter, min_input, max_input, min_filter, max_filter, strides, padding, out_type=None, name=None)` {#quantized_conv2d}
 
-Batch normalization.
+Computes a 2D convolution given quantized 4D input and filter tensors.
 
-As described in http://arxiv.org/abs/1502.03167.
-Normalizes a tensor by `mean` and `variance`, and applies (optionally) a
-`scale` \\(\gamma\\) to it, as well as an `offset` \\(\beta\\):
-
-\\(\frac{\gamma(x-\mu)}{\sigma}+\beta\\)
-
-`mean`, `variance`, `offset` and `scale` are all expected to be of one of two
-shapes:
-
-  * In all generality, they can have the same number of dimensions as the
-    input `x`, with identical sizes as `x` for the dimensions that are not
-    normalized over (the 'depth' dimension(s)), and dimension 1 for the
-    others which are being normalized over.
-    `mean` and `variance` in this case would typically be the outputs of
-    `tf.nn.moments(..., keep_dims=True)` during training, or running averages
-    thereof during inference.
-  * In the common case where the 'depth' dimension is the last dimension in
-    the input tensor `x`, they may be one dimensional tensors of the same
-    size as the 'depth' dimension.
-    This is the case for example for the common `[batch, depth]` layout of
-    fully-connected layers, and `[batch, height, width, depth]` for
-    convolutions.
-    `mean` and `variance` in this case would typically be the outputs of
-    `tf.nn.moments(..., keep_dims=False)` during training, or running averages
-    thereof during inference.
+The inputs are quantized tensors where the lowest value represents the real
+number of the associated minimum, and the highest represents the maximum.
+This means that you can only interpret the quantized output in the same way, by
+taking the returned minimum and maximum values into account.
 
 ##### Args:
 
 
-*  <b>`x`</b>: Input `Tensor` of arbitrary dimensionality.
-*  <b>`mean`</b>: A mean `Tensor`.
-*  <b>`variance`</b>: A variance `Tensor`.
-*  <b>`offset`</b>: An offset `Tensor`, often denoted \\(\beta\\) in equations, or
-    None. If present, will be added to the normalized tensor.
-*  <b>`scale`</b>: A scale `Tensor`, often denoted \\(\gamma\\) in equations, or
-    `None`. If present, the scale is applied to the normalized tensor.
-*  <b>`variance_epsilon`</b>: A small float number to avoid dividing by 0.
-*  <b>`name`</b>: A name for this operation (optional).
+*  <b>`input`</b>: A `Tensor`. Must be one of the following types: `qint8`, `quint8`, `qint16`, `quint16`, `qint32`.
+*  <b>`filter`</b>: A `Tensor`. Must be one of the following types: `qint8`, `quint8`, `qint16`, `quint16`, `qint32`.
+    filter's input_depth dimension must match input's depth dimensions.
+*  <b>`min_input`</b>: A `Tensor` of type `float32`.
+    The float value that the lowest quantized input value represents.
+*  <b>`max_input`</b>: A `Tensor` of type `float32`.
+    The float value that the highest quantized input value represents.
+*  <b>`min_filter`</b>: A `Tensor` of type `float32`.
+    The float value that the lowest quantized filter value represents.
+*  <b>`max_filter`</b>: A `Tensor` of type `float32`.
+    The float value that the highest quantized filter value represents.
+*  <b>`strides`</b>: A list of `ints`.
+    The stride of the sliding window for each dimension of the input
+    tensor.
+*  <b>`padding`</b>: A `string` from: `"SAME", "VALID"`.
+    The type of padding algorithm to use.
+*  <b>`out_type`</b>: An optional `tf.DType` from: `tf.qint8, tf.quint8, tf.qint16, tf.quint16, tf.qint32`. Defaults to `tf.qint32`.
+*  <b>`name`</b>: A name for the operation (optional).
 
 ##### Returns:
 
-  the normalized, scaled, offset tensor.
+  A tuple of `Tensor` objects (output, min_output, max_output).
+
+*  <b>`output`</b>: A `Tensor` of type `out_type`.
+*  <b>`min_output`</b>: A `Tensor` of type `float32`. The float value that the lowest quantized output value represents.
+*  <b>`max_output`</b>: A `Tensor` of type `float32`. The float value that the highest quantized output value represents.
 
 
 - - -
 
-### `tf.nn.depthwise_conv2d_native(input, filter, strides, padding, name=None)` {#depthwise_conv2d_native}
+### `tf.nn.quantized_relu_x(features, max_value, min_features, max_features, out_type=None, name=None)` {#quantized_relu_x}
 
-Computes a 2-D depthwise convolution given 4-D `input` and `filter` tensors.
-
-Given an input tensor of shape `[batch, in_height, in_width, in_channels]`
-and a filter / kernel tensor of shape
-`[filter_height, filter_width, in_channels, channel_multiplier]`, containing
-`in_channels` convolutional filters of depth 1, `depthwise_conv2d` applies
-a different filter to each input channel (expanding from 1 channel to
-`channel_multiplier` channels for each), then concatenates the results
-together. Thus, the output has `in_channels * channel_multiplier` channels.
-
-for k in 0..in_channels-1
-  for q in 0..channel_multiplier-1
-    output[b, i, j, k * channel_multiplier + q] =
-      sum_{di, dj} input[b, strides[1] * i + di, strides[2] * j + dj, k] *
-                        filter[di, dj, k, q]
-
-Must have `strides[0] = strides[3] = 1`.  For the most common case of the same
-horizontal and vertices strides, `strides = [1, stride, stride, 1]`.
+Computes Quantized Rectified Linear X: `min(max(features, 0), max_value)`
 
 ##### Args:
 
 
-*  <b>`input`</b>: A `Tensor`. Must be one of the following types: `float32`, `float64`.
-*  <b>`filter`</b>: A `Tensor`. Must have the same type as `input`.
+*  <b>`features`</b>: A `Tensor`. Must be one of the following types: `qint8`, `quint8`, `qint16`, `quint16`, `qint32`.
+*  <b>`max_value`</b>: A `Tensor` of type `float32`.
+*  <b>`min_features`</b>: A `Tensor` of type `float32`.
+    The float value that the lowest quantized value represents.
+*  <b>`max_features`</b>: A `Tensor` of type `float32`.
+    The float value that the highest quantized value represents.
+*  <b>`out_type`</b>: An optional `tf.DType` from: `tf.qint8, tf.quint8, tf.qint16, tf.quint16, tf.qint32`. Defaults to `tf.quint8`.
+*  <b>`name`</b>: A name for the operation (optional).
+
+##### Returns:
+
+  A tuple of `Tensor` objects (activations, min_activations, max_activations).
+
+*  <b>`activations`</b>: A `Tensor` of type `out_type`. Has the same output shape as "features".
+*  <b>`min_activations`</b>: A `Tensor` of type `float32`. The float value that the lowest quantized value represents.
+*  <b>`max_activations`</b>: A `Tensor` of type `float32`. The float value that the highest quantized value represents.
+
+
+- - -
+
+### `tf.nn.quantized_max_pool(input, min_input, max_input, ksize, strides, padding, name=None)` {#quantized_max_pool}
+
+Produces the max pool of the input tensor for quantized types.
+
+##### Args:
+
+
+*  <b>`input`</b>: A `Tensor`. Must be one of the following types: `qint8`, `quint8`, `qint16`, `quint16`, `qint32`.
+    The 4D (batch x rows x cols x depth) Tensor to MaxReduce over.
+*  <b>`min_input`</b>: A `Tensor` of type `float32`.
+    The float value that the lowest quantized input value represents.
+*  <b>`max_input`</b>: A `Tensor` of type `float32`.
+    The float value that the highest quantized input value represents.
+*  <b>`ksize`</b>: A list of `ints`.
+    The size of the window for each dimension of the input tensor.
+    The length must be 4 to match the number of dimensions of the input.
 *  <b>`strides`</b>: A list of `ints`.
-    1-D of length 4.  The stride of the sliding window for each dimension
-    of `input`.
+    The stride of the sliding window for each dimension of the input
+    tensor. The length must be 4 to match the number of dimensions of the input.
 *  <b>`padding`</b>: A `string` from: `"SAME", "VALID"`.
     The type of padding algorithm to use.
 *  <b>`name`</b>: A name for the operation (optional).
 
 ##### Returns:
 
-  A `Tensor`. Has the same type as `input`.
+  A tuple of `Tensor` objects (output, min_output, max_output).
+
+*  <b>`output`</b>: A `Tensor`. Has the same type as `input`.
+*  <b>`min_output`</b>: A `Tensor` of type `float32`. The float value that the lowest quantized output value represents.
+*  <b>`max_output`</b>: A `Tensor` of type `float32`. The float value that the highest quantized output value represents.
+
+
+- - -
+
+### `tf.nn.quantized_avg_pool(input, min_input, max_input, ksize, strides, padding, name=None)` {#quantized_avg_pool}
+
+Produces the average pool of the input tensor for quantized types.
+
+##### Args:
+
+
+*  <b>`input`</b>: A `Tensor`. Must be one of the following types: `qint8`, `quint8`, `qint16`, `quint16`, `qint32`.
+    4-D with shape `[batch, height, width, channels]`.
+*  <b>`min_input`</b>: A `Tensor` of type `float32`.
+    The float value that the lowest quantized input value represents.
+*  <b>`max_input`</b>: A `Tensor` of type `float32`.
+    The float value that the highest quantized input value represents.
+*  <b>`ksize`</b>: A list of `ints`.
+    The size of the window for each dimension of the input tensor.
+    The length must be 4 to match the number of dimensions of the input.
+*  <b>`strides`</b>: A list of `ints`.
+    The stride of the sliding window for each dimension of the input
+    tensor.  The length must be 4 to match the number of dimensions of the input.
+*  <b>`padding`</b>: A `string` from: `"SAME", "VALID"`.
+    The type of padding algorithm to use.
+*  <b>`name`</b>: A name for the operation (optional).
+
+##### Returns:
+
+  A tuple of `Tensor` objects (output, min_output, max_output).
+
+*  <b>`output`</b>: A `Tensor`. Has the same type as `input`.
+*  <b>`min_output`</b>: A `Tensor` of type `float32`. The float value that the lowest quantized output value represents.
+*  <b>`max_output`</b>: A `Tensor` of type `float32`. The float value that the highest quantized output value represents.
 
 

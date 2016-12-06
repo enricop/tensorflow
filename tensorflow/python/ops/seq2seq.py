@@ -71,11 +71,12 @@ from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import rnn
 from tensorflow.python.ops import rnn_cell
+from tensorflow.python.ops import rnn_cell_impl
 from tensorflow.python.ops import variable_scope
 from tensorflow.python.util import nest
 
 # TODO(ebrevdo): Remove once _linear is fully deprecated.
-linear = rnn_cell._linear  # pylint: disable=protected-access
+linear = rnn_cell_impl._linear  # pylint: disable=protected-access
 
 
 def _extract_argmax_and_embed(embedding, output_projection=None,
@@ -771,6 +772,9 @@ def embedding_attention_seq2seq(encoder_inputs,
   by another newly created embedding (of shape [num_decoder_symbols x
   input_size]). Then it runs attention decoder, initialized with the last
   encoder state, on embedded decoder_inputs and attending to encoder outputs.
+
+  Warning: when output_projection is None, the size of the attention vectors
+  and variables will be made proportional to num_decoder_symbols, can be large.
 
   Args:
     encoder_inputs: A list of 1D int32 Tensors of shape [batch_size].

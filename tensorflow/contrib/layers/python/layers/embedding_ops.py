@@ -22,6 +22,7 @@ from tensorflow.contrib.layers.python.ops import sparse_feature_cross_op
 
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import sparse_tensor
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import embedding_ops
@@ -30,8 +31,10 @@ from tensorflow.python.ops import sparse_ops
 from tensorflow.python.ops import variables
 from tensorflow.python.platform import tf_logging as logging
 
-__all__ = ["safe_embedding_lookup_sparse", "hashed_embedding_lookup",
-           "hashed_embedding_lookup_sparse"]
+__all__ = [
+    "safe_embedding_lookup_sparse", "scattered_embedding_lookup",
+    "scattered_embedding_lookup_sparse", "embedding_lookup_unique"
+]
 
 
 def safe_embedding_lookup_sparse(embedding_weights,
@@ -40,7 +43,8 @@ def safe_embedding_lookup_sparse(embedding_weights,
                                  combiner=None,
                                  default_id=None,
                                  name=None,
-                                 partition_strategy="div"):
+                                 partition_strategy="div",
+                                 max_norm=None):
   """Lookup embedding results, accounting for invalid IDs and empty features.
 
   The partitioned embedding in `embedding_weights` must all be the same shape
@@ -74,6 +78,8 @@ def safe_embedding_lookup_sparse(embedding_weights,
     name: A name for this operation (optional).
     partition_strategy: A string specifying the partitioning strategy.
         Currently `"div"` and `"mod"` are supported. Default is `"div"`.
+    max_norm: If not None, all embeddings are l2-normalized to max_norm before
+        combining.
 
 
   Returns:
@@ -114,8 +120,9 @@ def safe_embedding_lookup_sparse(embedding_weights,
             array_ops.slice(original_shape, [0], [original_rank - 1])),
         array_ops.gather(original_shape, original_rank - 1)])
     if sparse_weights is not None:
-      sparse_weights = ops.SparseTensor(sparse_ids.indices,
-                                        sparse_weights.values, sparse_ids.shape)
+      sparse_weights = sparse_tensor.SparseTensor(
+          sparse_ids.indices,
+          sparse_weights.values, sparse_ids.shape)
 
     # Prune invalid ids and weights.
     sparse_ids, sparse_weights = _prune_invalid_ids(sparse_ids, sparse_weights)
@@ -133,7 +140,8 @@ def safe_embedding_lookup_sparse(embedding_weights,
         sparse_weights,
         combiner=combiner,
         partition_strategy=partition_strategy,
-        name=None if default_id is None else scope)
+        name=None if default_id is None else scope,
+        max_norm=max_norm)
 
     if default_id is None:
       # Broadcast is_row_empty to the same shape as embedding_lookup_result,
@@ -142,7 +150,7 @@ def safe_embedding_lookup_sparse(embedding_weights,
           array_ops.reshape(is_row_empty, [-1, 1]),
           array_ops.pack([1, array_ops.shape(result)[1]]))
 
-      result = math_ops.select(is_row_empty,
+      result = array_ops.where(is_row_empty,
                                array_ops.zeros_like(result),
                                result,
                                name=scope)
@@ -170,7 +178,11 @@ def _prune_invalid_ids(sparse_ids, sparse_weights):
   return sparse_ids, sparse_weights
 
 
-def hashed_embedding_lookup(params, values, dimension, name=None):
+def scattered_embedding_lookup(params,
+                               values,
+                               dimension,
+                               name=None,
+                               hash_key=None):
   """Looks up embeddings using parameter hashing for each value in `values`.
 
   The i-th embedding component of a value v in `values` is found by retrieving
@@ -200,6 +212,9 @@ def hashed_embedding_lookup(params, values, dimension, name=None):
     values: `Tensor` of values to be embedded.
     dimension: Embedding dimension
     name: An optional name for this op.
+    hash_key: Specify the hash_key that will be used by the `FingerprintCat64`
+      function to combine the crosses fingerprints on SparseFeatureCrossOp
+      (optional).
 
   Returns:
     A tensor with shape [d0, ..., dn, dimension]
@@ -213,7 +228,7 @@ def hashed_embedding_lookup(params, values, dimension, name=None):
   if not isinstance(params, list):
     params = [params]
 
-  with ops.name_scope(name, "hashed_embedding_lookup",
+  with ops.name_scope(name, "scattered_embedding_lookup",
                       params + [dimension, values]):
     if dimension <= 0:
       raise ValueError("Dimension should be >0 not %d" % dimension)
@@ -243,7 +258,8 @@ def hashed_embedding_lookup(params, values, dimension, name=None):
     tensors_to_cross = [array_ops.tile(array_ops.expand_dims(
         math_ops.range(0, dimension), 0), array_ops.shape(values)), values]
     ids = sparse_feature_cross_op.sparse_feature_cross(
-        tensors_to_cross, hashed_output=True, num_buckets=num_params)
+        tensors_to_cross, hashed_output=True, num_buckets=num_params,
+        hash_key=hash_key)
     ids = sparse_ops.sparse_tensor_to_dense(ids)
 
     # No need to validate the indices since we have checked the params
@@ -255,15 +271,16 @@ def hashed_embedding_lookup(params, values, dimension, name=None):
         0, [values_shape, [dimension]]))
 
 
-def hashed_embedding_lookup_sparse(params,
-                                   sparse_values,
-                                   dimension,
-                                   combiner=None,
-                                   default_value=None,
-                                   name=None):
+def scattered_embedding_lookup_sparse(params,
+                                      sparse_values,
+                                      dimension,
+                                      combiner=None,
+                                      default_value=None,
+                                      name=None,
+                                      hash_key=None):
   """Looks up embeddings of a sparse feature using parameter hashing.
 
-  See `tf.contrib.layers.hashed_embedding_lookup` for embedding with hashing.
+  See `tf.contrib.layers.scattered_embedding_lookup` for embedding with hashing.
 
   Args:
     params: A `Tensor`, `list` of `Tensors`, or `PartitionedVariable`.
@@ -276,6 +293,9 @@ def hashed_embedding_lookup_sparse(params,
         the default.
     default_value: The value to use for an entry with no features.
     name: An optional name for this op.
+    hash_key: Specify the hash_key that will be used by the `FingerprintCat64`
+      function to combine the crosses fingerprints on SparseFeatureCrossOp
+      (optional).
 
   Returns:
      Dense tensor with shape [N, dimension] with N the number of rows in
@@ -293,10 +313,10 @@ def hashed_embedding_lookup_sparse(params,
     params = list(params)
   if not isinstance(params, list):
     params = [params]
-  if not isinstance(sparse_values, ops.SparseTensor):
+  if not isinstance(sparse_values, sparse_tensor.SparseTensor):
     raise TypeError("sparse_values must be SparseTensor")
 
-  with ops.name_scope(name, "hashed_sparse_embedding_lookup",
+  with ops.name_scope(name, "scattered_embedding_lookup_sparse",
                       params + [sparse_values]) as scope:
     # Fill in the empty rows.
     if default_value is None:
@@ -315,7 +335,8 @@ def hashed_embedding_lookup_sparse(params,
     values = sparse_values.values
     values, idx = array_ops.unique(values)
 
-    embeddings = hashed_embedding_lookup(params, values, dimension)
+    embeddings = scattered_embedding_lookup(
+        params, values, dimension, hash_key=hash_key)
 
     if combiner == "sum":
       embeddings = math_ops.sparse_segment_sum(embeddings, idx, segment_ids,
@@ -330,3 +351,40 @@ def hashed_embedding_lookup_sparse(params,
       raise ValueError("Combiner must be one of 'mean', 'sqrtn' or 'sum'.")
 
     return embeddings
+
+
+def embedding_lookup_unique(params, ids, name=None):
+  """Version of embedding_lookup that avoids duplicate lookups.
+
+  This can save communication in the case of repeated ids.
+  Same interface as embedding_lookup. Except it supports multi-dimensional `ids`
+  which allows to not reshape input/output to fit gather.
+
+  Args:
+    params: A list of tensors with the same shape and type, or a
+      `PartitionedVariable`. Shape `[index, d1, d2, ...]`.
+    ids: A one-dimensional `Tensor` with type `int32` or `int64` containing
+      the ids to be looked up in `params`. Shape `[ids1, ids2, ...]`.
+    name: A name for this operation (optional).
+
+  Returns:
+    A `Tensor` with the same type as the tensors in `params` and dimension of
+    `[ids1, ids2, d1, d2, ...]`.
+
+  Raises:
+    ValueError: If `params` is empty.
+  """
+  with ops.name_scope(name, "EmbeddingLookupUnique", [params, ids]):
+    ids = ops.convert_to_tensor(ids)
+    shape = array_ops.shape(ids)
+    ids_flat = array_ops.reshape(
+        ids, math_ops.reduce_prod(shape, keep_dims=True))
+    unique_ids, idx = array_ops.unique(ids_flat)
+    unique_embeddings = embedding_ops.embedding_lookup(params, unique_ids)
+    embeds_flat = array_ops.gather(unique_embeddings, idx)
+    embed_shape = array_ops.concat(
+        0, [shape, array_ops.shape(unique_embeddings)[1:]])
+    embeds = array_ops.reshape(embeds_flat, embed_shape)
+    embeds.set_shape(ids.get_shape().concatenate(
+        unique_embeddings.get_shape()[1:]))
+    return embeds

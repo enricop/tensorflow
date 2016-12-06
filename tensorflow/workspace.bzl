@@ -1,11 +1,14 @@
 # TensorFlow external dependencies that can be loaded in WORKSPACE files.
 
 load("//third_party/gpus:cuda_configure.bzl", "cuda_configure")
+load("//third_party/sycl:sycl_configure.bzl", "sycl_configure")
+
 
 # If TensorFlow is linked as a submodule.
 # path_prefix and tf_repo_name are no longer used.
 def tf_workspace(path_prefix = "", tf_repo_name = ""):
   cuda_configure(name = "local_config_cuda")
+  sycl_configure(name = "local_config_sycl")
   if path_prefix:
     print("path_prefix was specified to tf_workspace but is no longer used and will be removed in the future.")
   if tf_repo_name:
@@ -14,8 +17,8 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
   # These lines need to be changed when updating Eigen. They are parsed from
   # this file by the cmake and make builds to determine the eigen version and
   # hash.
-  eigen_version = "97c1ebe6ccc2"
-  eigen_sha256 = "58ab9fa44391c850d783fe0867f42a00b5300293b7d73bbbbc8756c2e649fea2"
+  eigen_version = "346ecdb306e6"
+  eigen_sha256 = "161a0b5b616fd53bd724f631a6eb4f7bf27656dde12c480176dc2264cf88ef4f"
 
   native.new_http_archive(
     name = "eigen_archive",
@@ -27,23 +30,23 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
 
   native.http_archive(
     name = "com_googlesource_code_re2",
-    url = "http://github.com/google/re2/archive/7bab3dc83df6a838cc004cc7a7f51d5fe1a427d5.tar.gz",
-    sha256 = "ef91af8850f734c8be65f2774747f4c2d8d81e556ba009faa79b4dd8b2759555",
-    strip_prefix = "re2-7bab3dc83df6a838cc004cc7a7f51d5fe1a427d5",
+    url = "http://github.com/google/re2/archive/b94b7cd42e9f02673cd748c1ac1d16db4052514c.tar.gz",
+    sha256 = "bd63550101e056427c9e7ff12a408c1c8b74e9803f393ca916b2926fc2c4906f",
+    strip_prefix = "re2-b94b7cd42e9f02673cd748c1ac1d16db4052514c",
   )
 
   native.http_archive(
     name = "gemmlowp",
-    url = "http://github.com/google/gemmlowp/archive/8b20dd2ce142115857220bd6a35e8a081b3e0829.tar.gz",
-    sha256 = "9cf5f1e3d64b3632dbae5c65efb79f4374ca9ac362d788fc61e086af937ff6d7",
-    strip_prefix = "gemmlowp-8b20dd2ce142115857220bd6a35e8a081b3e0829",
+    url = "http://github.com/google/gemmlowp/archive/a6f29d8ac48d63293f845f2253eccbf86bc28321.tar.gz",
+    sha256 = "75d40ea8e68b0d1644f052fffe8f14a410b2a73d40ccb859a95c0578d194ec26",
+    strip_prefix = "gemmlowp-a6f29d8ac48d63293f845f2253eccbf86bc28321",
   )
 
   native.new_http_archive(
     name = "farmhash_archive",
-    url = "http://github.com/google/farmhash/archive/71a777924015693c69bc3c8c6492fb8d5372c636.zip",
-    sha256 = "99190108fb96a5e38e183f6a23fb7742948214fc96a746a50c79eb09a255a298",
-    strip_prefix = "farmhash-71a777924015693c69bc3c8c6492fb8d5372c636/src",
+    url = "http://github.com/google/farmhash/archive/92e897b282426729f4724d91a637596c7e2fe28f.zip",
+    sha256 = "4c626d1f306bda2c6804ab955892f803f5245f4dcaecb4979dc08b091256da54",
+    strip_prefix = "farmhash-92e897b282426729f4724d91a637596c7e2fe28f",
     build_file = str(Label("//:farmhash.BUILD")),
   )
 
@@ -60,11 +63,19 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
   )
 
   native.new_http_archive(
-    name = "jpeg_archive",
-    url = "http://www.ijg.org/files/jpegsrc.v9a.tar.gz",
-    sha256 = "3a753ea48d917945dd54a2d97de388aa06ca2eb1066cbfdc6652036349fe05a7",
-    strip_prefix = "jpeg-9a",
-    build_file = str(Label("//:jpeg.BUILD")),
+    name = "nasm",
+    url = "http://www.nasm.us/pub/nasm/releasebuilds/2.12.02/nasm-2.12.02.tar.bz2",
+    sha256 = "00b0891c678c065446ca59bcee64719d0096d54d6886e6e472aeee2e170ae324",
+    strip_prefix = "nasm-2.12.02",
+    build_file = str(Label("//third_party:nasm.BUILD")),
+  )
+
+  native.new_http_archive(
+    name = "jpeg",
+    url = "https://github.com/libjpeg-turbo/libjpeg-turbo/archive/1.5.1.tar.gz",
+    sha256 = "c15a9607892113946379ccea3ca8b85018301b200754f209453ab21674268e77",
+    strip_prefix = "libjpeg-turbo-1.5.1",
+    build_file = str(Label("//third_party:jpeg.BUILD")),
   )
 
   native.new_http_archive(
@@ -79,7 +90,7 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
     name = "gif_archive",
     url = "http://ufpr.dl.sourceforge.net/project/giflib/giflib-5.1.4.tar.gz",
     sha256 = "34a7377ba834397db019e8eb122e551a49c98f49df75ec3fcc92b9a794a4f6d1",
-    strip_prefix = "giflib-5.1.4/lib",
+    strip_prefix = "giflib-5.1.4",
     build_file = str(Label("//:gif.BUILD")),
   )
 
@@ -98,9 +109,9 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
 
   native.http_archive(
     name = "protobuf",
-    url = "http://github.com/google/protobuf/archive/v3.1.0.tar.gz",
-    sha256 = "0a0ae63cbffc274efb573bdde9a253e3f32e458c41261df51c5dbc5ad541e8f7",
-    strip_prefix = "protobuf-3.1.0",
+    url = "http://github.com/google/protobuf/archive/008b5a228b37c054f46ba478ccafa5e855cb16db.tar.gz",
+    sha256 = "2737ad055eb8a9bc63ed068e32c4ea280b62d8236578cb4d4120eb5543f759ab",
+    strip_prefix = "protobuf-008b5a228b37c054f46ba478ccafa5e855cb16db",
   )
 
   native.new_http_archive(
@@ -124,6 +135,22 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
   native.bind(
     name = "python_headers",
     actual = str(Label("//util/python:python_headers")),
+  )
+
+  native.new_http_archive(
+    name = "pcre",
+    sha256 = "ccdf7e788769838f8285b3ee672ed573358202305ee361cfec7a4a4fb005bbc7",
+    url = "http://ftp.exim.org/pub/pcre/pcre-8.39.tar.gz",
+    strip_prefix = "pcre-8.39",
+    build_file = str(Label("//third_party:pcre.BUILD")),
+  )
+
+  native.new_http_archive(
+    name = "swig",
+    sha256 = "58a475dbbd4a4d7075e5fe86d4e54c9edde39847cdb96a3053d87cb64a23a453",
+    url = "http://ufpr.dl.sourceforge.net/project/swig/swig/swig-3.0.8/swig-3.0.8.tar.gz",
+    strip_prefix = "swig-3.0.8",
+    build_file = str(Label("//third_party:swig.BUILD")),
   )
 
   # grpc expects //external:protobuf_clib and //external:protobuf_compiler
@@ -164,6 +191,16 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
     init_submodules = True,
     remote = "https://github.com/antirez/linenoise.git",
     build_file = str(Label("//:linenoise.BUILD")),
+  )
+
+  # TODO(phawkins): currently, this rule uses an unofficial LLVM mirror.
+  # Switch to an official source of snapshots if/when possible.
+  native.new_http_archive(
+    name = "llvm",
+    url = "http://github.com/llvm-mirror/llvm/archive/ad27fdae895df1b9ad11a93102de6622f63e1220.tar.gz",
+    sha256 = "ce7abf076586f2ef13dcd1c4e7ba13604a0826a0f44fe0a6faceeb9bdffc8544",
+    strip_prefix = "llvm-ad27fdae895df1b9ad11a93102de6622f63e1220",
+    build_file = str(Label("//third_party/llvm:llvm.BUILD")),
   )
 
   native.new_http_archive(
@@ -210,4 +247,16 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
   native.bind(
     name = "zlib",
     actual = "@zlib_archive//:zlib",
+  )
+
+  # Make junit-4.12 available as //external:junit
+  native.http_jar(
+    name = "junit_jar",
+    url = "https://github.com/junit-team/junit4/releases/download/r4.12/junit-4.12.jar",
+    sha256 = "59721f0805e223d84b90677887d9ff567dc534d7c502ca903c0c2b17f05c116a",
+  )
+
+  native.bind(
+    name = "junit",
+    actual = "@junit_jar//jar",
   )

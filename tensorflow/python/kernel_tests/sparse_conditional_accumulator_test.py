@@ -52,7 +52,6 @@ class IndexedSlicesConditionalAccumulatorTest(tf.test.TestCase):
     with tf.Graph().as_default():
       q = tf.SparseConditionalAccumulator(tf.float32, name="Q")
     self.assertTrue(isinstance(q.accumulator_ref, tf.Tensor))
-    self.assertEquals(tf.string_ref, q.accumulator_ref.dtype)
     self.assertProtoEquals("""
       name:'Q' op:'SparseConditionalAccumulator'
       attr { key: 'dtype' value { type: DT_FLOAT } }
@@ -66,7 +65,6 @@ class IndexedSlicesConditionalAccumulatorTest(tf.test.TestCase):
       q = tf.SparseConditionalAccumulator(
           tf.float32, name="Q", shape=tf.TensorShape([1, 5, 2, 8]))
     self.assertTrue(isinstance(q.accumulator_ref, tf.Tensor))
-    self.assertEquals(tf.string_ref, q.accumulator_ref.dtype)
     self.assertProtoEquals("""
       name:'Q' op:'SparseConditionalAccumulator'
       attr { key: 'dtype' value { type: DT_FLOAT } }
@@ -310,7 +308,7 @@ class IndexedSlicesConditionalAccumulatorTest(tf.test.TestCase):
       self._assertEqual_nparray([[0, elems_ave], [0, 0]], results[0], sess)
 
   def _blocking_takeg(self, sess, takeg_op):
-    with self.assertRaisesOpError("TakeGrad operation was cancelled"):
+    with self.assertRaisesOpError("was cancelled"):
       sess.run(takeg_op)
 
   def testAccumulatorCancel(self):
@@ -538,6 +536,34 @@ class IndexedSlicesConditionalAccumulatorTest(tf.test.TestCase):
 
       val = sess.run(q.take_indexed_slices_grad(1))
       self.assertAllEqual(val.dense_shape, [-1, 2, 2, 3])
+
+  def testApplyGradtInt32IndicesAndShape(self):
+    with self.test_session() as sess:
+      q = tf.SparseConditionalAccumulator(
+          tf.float32, name="Q", shape=tf.TensorShape([3, 3]))
+      accum_op = q.apply_grad(
+          grad_indices=tf.constant(
+              [0, 2], dtype=tf.int32),
+          grad_values=tf.constant(
+              [[0, 0, 1], [3, 0, 4]], dtype=tf.float32),
+          grad_shape=tf.constant(
+              [3, 3], dtype=tf.int32))
+      accum_op.run()
+      accum_op = q.apply_indexed_slices_grad(
+          tf.IndexedSlices(
+              indices=tf.constant(
+                  [0, 2], dtype=tf.int32),
+              values=tf.constant(
+                  [[0, 0, 1], [3, 0, 4]], dtype=tf.float32),
+              dense_shape=tf.constant(
+                  [3, 3], dtype=tf.int32)))
+      accum_op.run()
+      self.assertEqual(q.num_accumulated().eval(), 2)
+
+      val = sess.run(q.take_indexed_slices_grad(1))
+      self.assertAllEqual(val.indices, [0, 2])
+      self.assertAllEqual(val.values, [[0, 0, 1], [3, 0, 4]])
+      self.assertAllEqual(val.dense_shape, [3, 3])
 
 
 if __name__ == "__main__":
